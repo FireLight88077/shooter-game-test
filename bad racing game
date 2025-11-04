@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Babylon Racing Game</title>
+  <style>
+    html, body { margin: 0; overflow: hidden; width: 100%; height: 100%; }
+    canvas { width: 100%; height: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script>
+    const canvas = document.getElementById("renderCanvas");
+    const engine = new BABYLON.Engine(canvas, true);
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color3(0.8, 0.9, 1);
+    scene.collisionsEnabled = true;
+
+    const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+
+    const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 300, height: 300 }, scene);
+    ground.checkCollisions = true;
+    ground.material = new BABYLON.StandardMaterial("groundMat", scene);
+    ground.material.diffuseColor = new BABYLON.Color3(0.4, 0.8, 0.4);
+
+    // Waypoints
+    const waypoints = [];
+    let x = 0, z = 0, angle = 0;
+    for (let i = 0; i < 20; i++) {
+      angle += (Math.random() - 0.5) * Math.PI / 4;
+      const dist = 10 + Math.random() * 10;
+      x += Math.cos(angle) * dist;
+      z += Math.sin(angle) * dist;
+      waypoints.push(new BABYLON.Vector3(x, 0.1, z));
+    }
+
+    // Flat directional guide track using ribbon
+    const guidePath = [];
+    const width = 2;
+    for (let i = 0; i < waypoints.length; i++) {
+      const wp = waypoints[i];
+      const next = waypoints[Math.min(i + 1, waypoints.length - 1)];
+      const dir = next.subtract(wp).normalize();
+      const left = new BABYLON.Vector3(-dir.z, 0, dir.x).scale(width / 2);
+      const right = left.negate();
+      guidePath.push([wp.add(left), wp.add(right)]);
+    }
+
+    const guideTrack = BABYLON.MeshBuilder.CreateRibbon("guide", {
+      pathArray: guidePath,
+      closeArray: false,
+      closePath: false,
+      offset: 0
+    }, scene);
+    guideTrack.checkCollisions = true;
+    guideTrack.material = new BABYLON.StandardMaterial("guideMat", scene);
+    guideTrack.material.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.5);
+
+    // Start/Finish Line
+    const startLine = BABYLON.MeshBuilder.CreateBox("startLine", { width: 4, height: 0.2, depth: 0.2 }, scene);
+    startLine.position = waypoints[0].clone();
+    startLine.position.y = 0.2;
+    startLine.checkCollisions = true;
+    startLine.material = new BABYLON.StandardMaterial("startMat", scene);
+    startLine.material.diffuseColor = BABYLON.Color3.White();
+
+    const finishLine = BABYLON.MeshBuilder.CreateBox("finishLine", { width: 4, height: 0.2, depth: 0.2 }, scene);
+    finishLine.position = waypoints[waypoints.length - 1].clone();
+    finishLine.position.y = 0.2;
+    finishLine.checkCollisions = true;
+    finishLine.material = new BABYLON.StandardMaterial("finishMat", scene);
+    finishLine.material.diffuseColor = BABYLON.Color3.Black();
+
+    // Car creation
+    function createCar(color) {
+      const car = BABYLON.MeshBuilder.CreateBox("car", { width: 2, height: 1, depth: 4 }, scene);
+      car.position = waypoints[0].clone();
+      car.position.y = 0.5;
+      car.material = new BABYLON.StandardMaterial("carMat", scene);
+      car.material.diffuseColor = color;
+      car.speed = 0;
+      car.angle = 0;
+      car.waypointIndex = 0;
+      car.finished = false;
+
+      // Enable collisions
+      car.checkCollisions = true;
+      car.ellipsoid = new BABYLON.Vector3(1, 1, 2);
+      car.ellipsoidOffset = new BABYLON.Vector3(0, 0.5, 0);
+
+      return car;
+    }
+
+    const playerCar = createCar(BABYLON.Color3.Red());
+
+    // First-person camera
+    const camera = new BABYLON.FreeCamera("fpCam", new BABYLON.Vector3(0, 2, -5), scene);
+    camera.parent = playerCar;
+    camera.attachControl(canvas, true);
+
+    // AI Bots
+    const bots = [BABYLON.Color3.Blue(), BABYLON.Color3.Green(), BABYLON.Color3.Yellow()].map((color, i) => {
+      const bot = createCar(color);
+      bot.position.z += (i + 1) * 5;
+      return bot;
+    });
+
+    // Controls
+    const keys = {};
+    window.addEventListener("keydown", e => keys[e.key] = true);
+    window.addEventListener("keyup", e => keys[e.key] = false);
+
+    scene.onBeforeRenderObservable.add(() => {
+      // Player movement
+      if (!playerCar.finished) {
+        if (keys["ArrowUp"]) playerCar.speed += 0.02;
+        if (keys["ArrowDown"]) playerCar.speed -= 0.02;
+        if (keys["ArrowLeft"]) playerCar.angle -= 0.03;
+        if (keys["ArrowRight"]) playerCar.angle += 0.03;
+
+        playerCar.speed *= 0.98;
+        playerCar.rotation.y = playerCar.angle;
+        playerCar.moveWithCollisions(new BABYLON.Vector3(Math.sin(playerCar.angle) * playerCar.speed, 0, Math.cos(playerCar.angle) * playerCar.speed));
+
+        if (BABYLON.Vector3.Distance(playerCar.position, finishLine.position) < 3) {
+          playerCar.finished = true;
+          playerCar.speed = 0;
+          console.log("Player finished!");
+        }
+      }
+
+      // Smarter AI movement
+      bots.forEach(bot => {
+        if (bot.finished) return;
+
+        const wp = waypoints[Math.min(bot.waypointIndex + 2, waypoints.length - 1)];
+        const dir = wp.subtract(bot.position);
+        const distance = dir.length();
+
+        const targetAngle = Math.atan2(dir.x, dir.z);
+        let angleDiff = targetAngle - bot.angle;
+        angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
+        bot.angle += angleDiff * 0.05;
+        bot.rotation.y = bot.angle;
+
+        const turnSharpness = Math.abs(angleDiff);
+        const maxSpeed = 0.12 - turnSharpness * 0.5;
+        bot.speed = Math.min(bot.speed + 0.01, maxSpeed);
+        bot.speed *= 0.98;
+
+        bots.concat([playerCar]).forEach(other => {
+          if (other !== bot && !other.finished) {
+            const avoidDir = bot.position.subtract(other.position);
+            if (avoidDir.length() < 3) {
+              bot.angle += Math.sign(avoidDir.x) * 0.05;
+            }
+          }
+        });
+
+        bot.moveWithCollisions(new BABYLON.Vector3(Math.sin(bot.angle) * bot.speed, 0, Math.cos(bot.angle) * bot.speed));
+
+        if (distance < 3) bot.waypointIndex++;
+        if (bot.waypointIndex >= waypoints.length) {
+          bot.finished = true;
+          bot.speed = 0;
+          console.log("Bot finished!");
+        }
+      });
+    });
+
+    engine.runRenderLoop(() => scene.render());
+    window.addEventListener("resize", () => engine.resize());
+  </script>
+</body>
+</html>
